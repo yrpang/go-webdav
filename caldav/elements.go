@@ -11,7 +11,7 @@ import (
 const namespace = "urn:ietf:params:xml:ns:caldav"
 
 var (
-	calendarHomeSetName = xml.Name{namespace, "calendar-home-set"}
+	calendarHomeSetName        = xml.Name{namespace, "calendar-home-set"}
 	calendarUserAddressSetName = xml.Name{namespace, "calendar-user-address-set"}
 
 	calendarDescriptionName           = xml.Name{namespace, "calendar-description"}
