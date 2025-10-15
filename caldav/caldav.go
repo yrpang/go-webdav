@@ -4,7 +4,10 @@
 package caldav
 
 import (
+	"encoding/xml"
 	"fmt"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/emersion/go-ical"
@@ -69,6 +72,7 @@ type Calendar struct {
 	Description           string
 	MaxResourceSize       int64
 	SupportedComponentSet []string
+	SupportedCalendarData []CalendarDataType
 }
 
 type CalendarCompRequest struct {
@@ -130,4 +134,64 @@ type CalendarObject struct {
 	ContentLength int64
 	ETag          string
 	Data          *ical.Calendar
+}
+
+type CalendarDataType struct {
+	ContentType string
+	Version     string
+}
+
+type CalendarSyncQuery struct {
+	SyncToken   string
+	Limit       int
+	DataRequest *CalendarCompRequest
+}
+
+type CalendarSyncResponse struct {
+	SyncToken string
+	Updated   []CalendarObject
+	Deleted   []string
+}
+
+var (
+	validSyncTokenName = xml.Name{Space: internal.Namespace, Local: "valid-sync-token"}
+	syncLevelName      = xml.Name{Space: internal.Namespace, Local: "sync-level"}
+)
+
+type syncLevelError struct {
+	XMLName xml.Name `xml:"DAV: sync-level"`
+	Level   string   `xml:",chardata"`
+}
+
+// NewValidSyncTokenError returns the DAV:valid-sync-token precondition failure.
+func NewValidSyncTokenError() error {
+	return &internal.HTTPError{
+		Code: http.StatusForbidden,
+		Err: &internal.Error{
+			Raw: []internal.RawXMLValue{
+				*internal.NewRawXMLElement(validSyncTokenName, nil, nil),
+			},
+		},
+	}
+}
+
+// NewSyncLevelError returns the DAV:sync-level precondition failure indicating
+// that the requested sync-level is not supported.
+func NewSyncLevelError(levels ...string) error {
+	level := ""
+	if len(levels) > 0 {
+		level = strings.Join(levels, " ")
+	}
+
+	raw, err := internal.EncodeRawXMLElement(&syncLevelError{Level: level})
+	if err != nil {
+		return internal.HTTPErrorf(http.StatusForbidden, "caldav: unsupported sync-level")
+	}
+
+	return &internal.HTTPError{
+		Code: http.StatusForbidden,
+		Err: &internal.Error{
+			Raw: []internal.RawXMLValue{*raw},
+		},
+	}
 }

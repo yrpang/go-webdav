@@ -54,11 +54,14 @@ func TestPropFindSupportedCalendarComponent(t *testing.T) {
 
 var propFindUserPrincipal = `
 <?xml version="1.0" encoding="UTF-8"?>
-<A:propfind xmlns:A="DAV:">
+<A:propfind xmlns:A="DAV:" xmlns:B="urn:ietf:params:xml:ns:caldav">
   <A:prop>
     <A:current-user-principal/>
     <A:principal-URL/>
     <A:resourcetype/>
+    <A:displayname/>
+    <B:calendar-user-address-set/>
+    <A:principal-collection-set/>
   </A:prop>
 </A:propfind>
 `
@@ -80,6 +83,18 @@ func TestPropFindRoot(t *testing.T) {
 	resp := string(data)
 	if !strings.Contains(resp, `<current-user-principal xmlns="DAV:"><href>/user/</href></current-user-principal>`) {
 		t.Errorf("No user-principal returned when doing a PROPFIND against root, response:\n%s", resp)
+	}
+	if !strings.Contains(resp, `<principal-URL xmlns="DAV:"><href>/user/</href></principal-URL>`) {
+		t.Errorf("No principal-URL returned when doing a PROPFIND against root, response:\n%s", resp)
+	}
+	if !strings.Contains(resp, `<displayname xmlns="DAV:">user</displayname>`) {
+		t.Errorf("No displayname returned when doing a PROPFIND against root, response:\n%s", resp)
+	}
+	if !strings.Contains(resp, `<calendar-user-address-set xmlns="urn:ietf:params:xml:ns:caldav"><href xmlns="DAV:">/user/</href></calendar-user-address-set>`) {
+		t.Errorf("No calendar-user-address-set returned when doing a PROPFIND against root, response:\n%s", resp)
+	}
+	if !strings.Contains(resp, `<principal-collection-set xmlns="DAV:"><href>/</href></principal-collection-set>`) {
+		t.Errorf("No principal-collection-set returned when doing a PROPFIND against root, response:\n%s", resp)
 	}
 }
 
@@ -199,6 +214,10 @@ func (t testBackend) GetCalendar(ctx context.Context, path string) (*Calendar, e
 	return nil, fmt.Errorf("Calendar for path: %s not found", path)
 }
 
+func (t testBackend) GetCollectionETag(ctx context.Context, path string) (string, error) {
+	return "test-etag", nil
+}
+
 func (t testBackend) CalendarHomeSetPath(ctx context.Context) (string, error) {
 	return "/user/calendars/", nil
 }
@@ -232,4 +251,14 @@ func (t testBackend) ListCalendarObjects(ctx context.Context, path string, req *
 
 func (t testBackend) QueryCalendarObjects(ctx context.Context, path string, query *CalendarQuery) ([]CalendarObject, error) {
 	return nil, nil
+}
+
+func (t testBackend) SyncCalendarObjects(ctx context.Context, path string, query *CalendarSyncQuery) (*CalendarSyncResponse, error) {
+	resp := &CalendarSyncResponse{
+		SyncToken: "token",
+	}
+	if objs, ok := t.objectMap[path]; ok {
+		resp.Updated = append(resp.Updated, objs...)
+	}
+	return resp, nil
 }

@@ -12,6 +12,7 @@ const namespace = "urn:ietf:params:xml:ns:caldav"
 
 var (
 	calendarHomeSetName = xml.Name{namespace, "calendar-home-set"}
+	calendarUserAddressSetName = xml.Name{namespace, "calendar-user-address-set"}
 
 	calendarDescriptionName           = xml.Name{namespace, "calendar-description"}
 	supportedCalendarDataName         = xml.Name{namespace, "supported-calendar-data"}
@@ -20,6 +21,7 @@ var (
 
 	calendarQueryName    = xml.Name{namespace, "calendar-query"}
 	calendarMultigetName = xml.Name{namespace, "calendar-multiget"}
+	syncCollectionName   = xml.Name{"DAV:", "sync-collection"}
 
 	calendarName     = xml.Name{namespace, "calendar"}
 	calendarDataName = xml.Name{namespace, "calendar-data"}
@@ -33,6 +35,12 @@ type calendarHomeSet struct {
 
 func (a *calendarHomeSet) GetXMLName() xml.Name {
 	return calendarHomeSetName
+}
+
+// https://datatracker.ietf.org/doc/html/rfc6638#section-7.1
+type calendarUserAddressSet struct {
+	XMLName xml.Name        `xml:"urn:ietf:params:xml:ns:caldav calendar-user-address-set"`
+	Hrefs   []internal.Href `xml:"DAV: href"`
 }
 
 // https://tools.ietf.org/html/rfc4791#section-5.2.1
@@ -217,6 +225,7 @@ type calendarDataResp struct {
 type reportReq struct {
 	Query    *calendarQuery
 	Multiget *calendarMultiget
+	Sync     *internal.SyncCollectionQuery
 	// TODO: CALDAV:free-busy-query
 }
 
@@ -229,6 +238,9 @@ func (r *reportReq) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	case calendarMultigetName:
 		r.Multiget = &calendarMultiget{}
 		v = r.Multiget
+	case syncCollectionName:
+		r.Sync = &internal.SyncCollectionQuery{}
+		v = r.Sync
 	default:
 		return fmt.Errorf("caldav: unsupported REPORT root %q %q", start.Name.Space, start.Name.Local)
 	}
@@ -241,4 +253,15 @@ type mkcolReq struct {
 	ResourceType internal.ResourceType `xml:"set>prop>resourcetype"`
 	DisplayName  string                `xml:"set>prop>displayname"`
 	// TODO this could theoretically contain all addressbook properties?
+}
+
+type mkcalendarReq struct {
+	XMLName      xml.Name                       `xml:"DAV: mkcalendar"`
+	ResourceType internal.ResourceType          `xml:"set>prop>resourcetype"`
+	DisplayName  string                         `xml:"set>prop>displayname"`
+	Description  string                         `xml:"set>prop>calendar-description"`
+	Components   *supportedCalendarComponentSet `xml:"set>prop>supported-calendar-component-set"`
+	Data         *supportedCalendarData         `xml:"set>prop>supported-calendar-data"`
+	MaxSize      *maxResourceSize               `xml:"set>prop>max-resource-size"`
+	// TODO this could theoretically contain all calendar properties?
 }

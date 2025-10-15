@@ -107,9 +107,22 @@ func (c *Client) FindCalendars(ctx context.Context, calendarHomeSet string) ([]C
 			return nil, err
 		}
 
+		var supportedData supportedCalendarData
+		if err := resp.DecodeProp(&supportedData); err != nil && !internal.IsNotFound(err) {
+			return nil, err
+		}
+
 		compNames := make([]string, 0, len(supportedCompSet.Comp))
 		for _, comp := range supportedCompSet.Comp {
 			compNames = append(compNames, comp.Name)
+		}
+
+		dataTypes := make([]CalendarDataType, 0, len(supportedData.Types))
+		for _, t := range supportedData.Types {
+			dataTypes = append(dataTypes, CalendarDataType{
+				ContentType: t.ContentType,
+				Version:     t.Version,
+			})
 		}
 
 		l = append(l, Calendar{
@@ -118,6 +131,7 @@ func (c *Client) FindCalendars(ctx context.Context, calendarHomeSet string) ([]C
 			Description:           desc.Description,
 			MaxResourceSize:       maxResSize.Size,
 			SupportedComponentSet: compNames,
+			SupportedCalendarData: dataTypes,
 		})
 	}
 

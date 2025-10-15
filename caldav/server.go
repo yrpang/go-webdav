@@ -17,6 +17,21 @@ import (
 	"github.com/emersion/go-webdav/internal"
 )
 
+var (
+	principalURLName           = xml.Name{"DAV:", "principal-URL"}
+	principalCollectionSetName = xml.Name{"DAV:", "principal-collection-set"}
+)
+
+type principalURLProp struct {
+	XMLName xml.Name      `xml:"DAV: principal-URL"`
+	Href    internal.Href `xml:"href"`
+}
+
+type principalCollectionSet struct {
+	XMLName xml.Name        `xml:"DAV: principal-collection-set"`
+	Hrefs   []internal.Href `xml:"href"`
+}
+
 // TODO if nothing more Caldav-specific needs to be added this should be merged with carddav.PutAddressObjectOptions
 type PutCalendarObjectOptions struct {
 	// IfNoneMatch indicates that the client does not want to overwrite
@@ -34,10 +49,12 @@ type Backend interface {
 	CreateCalendar(ctx context.Context, calendar *Calendar) error
 	ListCalendars(ctx context.Context) ([]Calendar, error)
 	GetCalendar(ctx context.Context, path string) (*Calendar, error)
+	GetCollectionETag(ctx context.Context, path string) (string, error)
 
 	GetCalendarObject(ctx context.Context, path string, req *CalendarCompRequest) (*CalendarObject, error)
 	ListCalendarObjects(ctx context.Context, path string, req *CalendarCompRequest) ([]CalendarObject, error)
 	QueryCalendarObjects(ctx context.Context, path string, query *CalendarQuery) ([]CalendarObject, error)
+	SyncCalendarObjects(ctx context.Context, path string, query *CalendarSyncQuery) (*CalendarSyncResponse, error)
 	PutCalendarObject(ctx context.Context, path string, calendar *ical.Calendar, opts *PutCalendarObjectOptions) (*CalendarObject, error)
 	DeleteCalendarObject(ctx context.Context, path string) error
 
@@ -73,6 +90,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "REPORT":
 		err = h.handleReport(w, r)
+	case "MKCALENDAR":
+		b := backend{
+			Backend: h.Backend,
+			Prefix:  strings.TrimSuffix(h.Prefix, "/"),
+		}
+		err = b.Mkcalendar(r)
+		if err == nil {
+			w.WriteHeader(http.StatusCreated)
+		}
 	default:
 		b := backend{
 			Backend: h.Backend,
@@ -97,8 +123,10 @@ func (h *Handler) handleReport(w http.ResponseWriter, r *http.Request) error {
 		return h.handleQuery(r, w, report.Query)
 	} else if report.Multiget != nil {
 		return h.handleMultiget(r.Context(), w, report.Multiget)
+	} else if report.Sync != nil {
+		return h.handleSyncCollection(r, w, report.Sync)
 	}
-	return internal.HTTPErrorf(http.StatusBadRequest, "caldav: expected calendar-query or calendar-multiget element in REPORT request")
+	return internal.HTTPErrorf(http.StatusBadRequest, "caldav: expected calendar-query, calendar-multiget or sync-collection element in REPORT request")
 }
 
 func decodeParamFilter(el *paramFilter) (*ParamFilter, error) {
@@ -287,6 +315,96 @@ func (h *Handler) handleMultiget(ctx context.Context, w http.ResponseWriter, mul
 	return internal.ServeMultiStatus(w, ms)
 }
 
+func (h *Handler) handleSyncCollection(r *http.Request, w http.ResponseWriter, query *internal.SyncCollectionQuery) error {
+	if query.Prop == nil {
+		return internal.HTTPErrorf(http.StatusBadRequest, "caldav: sync-collection request missing DAV:prop element")
+	}
+
+	depth := internal.DepthOne
+	if s := r.Header.Get("Depth"); s != "" {
+		var err error
+		depth, err = internal.ParseDepth(s)
+		if err != nil {
+			return err
+		}
+	}
+	if depth != internal.DepthOne {
+		return internal.HTTPErrorf(http.StatusBadRequest, "caldav: sync-collection requires Depth: 1")
+	}
+
+	if query.SyncLevel == "" {
+		return internal.HTTPErrorf(http.StatusBadRequest, "caldav: sync-collection missing sync-level")
+	}
+	if query.SyncLevel != "1" {
+		return NewSyncLevelError("1")
+	}
+
+	var limit int
+	if query.Limit != nil {
+		limit = int(query.Limit.NResults)
+		if limit <= 0 {
+			return internal.HTTPErrorf(http.StatusBadRequest, "caldav: sync-collection limit must be positive")
+		}
+	}
+
+	var dataReq *CalendarCompRequest
+	if query.Prop != nil {
+		var calendarData calendarDataReq
+		if err := query.Prop.Decode(&calendarData); err == nil {
+			req, err := decodeCalendarDataReq(&calendarData)
+			if err != nil {
+				return err
+			}
+			dataReq = req
+		} else if !internal.IsNotFound(err) {
+			return err
+		}
+	}
+
+	result, err := h.Backend.SyncCalendarObjects(r.Context(), r.URL.Path, &CalendarSyncQuery{
+		SyncToken:   query.SyncToken,
+		Limit:       limit,
+		DataRequest: dataReq,
+	})
+	if err != nil {
+		return err
+	}
+
+	b := backend{
+		Backend: h.Backend,
+		Prefix:  strings.TrimSuffix(h.Prefix, "/"),
+	}
+
+	propfind := internal.PropFind{
+		Prop: query.Prop,
+	}
+
+	resps := make([]internal.Response, 0, len(result.Deleted)+len(result.Updated))
+	for _, href := range result.Deleted {
+		resps = append(resps, internal.Response{
+			Hrefs: []internal.Href{
+				{Path: href},
+			},
+			Status: &internal.Status{Code: http.StatusNotFound},
+		})
+	}
+
+	for _, co := range result.Updated {
+		resp, err := b.propFindCalendarObject(r.Context(), &propfind, &co)
+		if err != nil {
+			return err
+		}
+		resps = append(resps, *resp)
+	}
+
+	ms := internal.NewMultiStatus(resps...)
+	if result.SyncToken != "" {
+		ms.SyncToken = result.SyncToken
+	}
+
+	return internal.ServeMultiStatus(w, ms)
+}
+
 type backend struct {
 	Backend Backend
 	Prefix  string
@@ -315,7 +433,7 @@ func (b *backend) resourceTypeAtPath(reqPath string) resourceType {
 }
 
 func (b *backend) Options(r *http.Request) (caps []string, allow []string, err error) {
-	caps = []string{"calendar-access"}
+	caps = []string{"calendar-access", "sync-collection"}
 
 	if b.resourceTypeAtPath(r.URL.Path) != resourceTypeCalendarObject {
 		return caps, []string{http.MethodOptions, "PROPFIND", "REPORT", "DELETE", "MKCOL"}, nil
@@ -483,6 +601,28 @@ func (b *backend) propFindUserPrincipal(ctx context.Context, propfind *internal.
 		return nil, err
 	}
 
+	trimmedPrincipal := strings.TrimSuffix(principalPath, "/")
+	principalCollectionPath := path.Dir(trimmedPrincipal)
+	if principalCollectionPath == "." {
+		principalCollectionPath = "/"
+	}
+	if !strings.HasSuffix(principalCollectionPath, "/") {
+		principalCollectionPath += "/"
+	}
+
+	userID := ""
+	if trimmed := strings.Trim(principalPath, "/"); trimmed != "" {
+		segments := strings.Split(trimmed, "/")
+		userID = segments[len(segments)-1]
+	}
+	if userID == "" {
+		userID = "user"
+	}
+
+	addresses := []internal.Href{
+		{Path: principalPath},
+	}
+
 	props := map[xml.Name]internal.PropFindFunc{
 		internal.CurrentUserPrincipalName: internal.PropFindValue(&internal.CurrentUserPrincipal{
 			Href: internal.Href{Path: principalPath},
@@ -491,6 +631,20 @@ func (b *backend) propFindUserPrincipal(ctx context.Context, propfind *internal.
 			Href: internal.Href{Path: homeSetPath},
 		}),
 		internal.ResourceTypeName: internal.PropFindValue(internal.NewResourceType(internal.CollectionName)),
+		internal.DisplayNameName: internal.PropFindValue(&internal.DisplayName{
+			Name: userID,
+		}),
+		principalURLName: internal.PropFindValue(&principalURLProp{
+			Href: internal.Href{Path: principalPath},
+		}),
+		principalCollectionSetName: internal.PropFindValue(&principalCollectionSet{
+			Hrefs: []internal.Href{
+				{Path: principalCollectionPath},
+			},
+		}),
+		calendarUserAddressSetName: internal.PropFindValue(&calendarUserAddressSet{
+			Hrefs: addresses,
+		}),
 	}
 	return internal.NewPropFindResponse(principalPath, propfind, props)
 }
@@ -516,6 +670,11 @@ func (b *backend) propFindHomeSet(ctx context.Context, propfind *internal.PropFi
 }
 
 func (b *backend) propFindCalendar(ctx context.Context, propfind *internal.PropFind, cal *Calendar) (*internal.Response, error) {
+	etag, err := b.Backend.GetCollectionETag(ctx, cal.Path)
+	if err != nil {
+		return nil, err
+	}
+
 	props := map[xml.Name]internal.PropFindFunc{
 		internal.CurrentUserPrincipalName: func(*internal.RawXMLValue) (interface{}, error) {
 			path, err := b.Backend.CurrentUserPrincipal(ctx)
@@ -524,15 +683,9 @@ func (b *backend) propFindCalendar(ctx context.Context, propfind *internal.PropF
 			}
 			return &internal.CurrentUserPrincipal{Href: internal.Href{Path: path}}, nil
 		},
-		internal.ResourceTypeName: internal.PropFindValue(internal.NewResourceType(internal.CollectionName, calendarName)),
-		calendarDescriptionName: internal.PropFindValue(&calendarDescription{
-			Description: cal.Description,
-		}),
-		supportedCalendarDataName: internal.PropFindValue(&supportedCalendarData{
-			Types: []calendarDataType{
-				{ContentType: ical.MIMEType, Version: "2.0"},
-			},
-		}),
+		internal.ResourceTypeName:   internal.PropFindValue(internal.NewResourceType(internal.CollectionName, calendarName)),
+		internal.GetContentTypeName: internal.PropFindValue(&internal.GetContentType{Type: "httpd/unix-directory"}),
+		internal.GetETagName:        internal.PropFindValue(&internal.GetETag{ETag: internal.ETag(etag)}),
 		supportedCalendarComponentSetName: func(*internal.RawXMLValue) (interface{}, error) {
 			components := []comp{}
 			if cal.SupportedComponentSet != nil {
@@ -547,7 +700,6 @@ func (b *backend) propFindCalendar(ctx context.Context, propfind *internal.PropF
 			}, nil
 		},
 	}
-
 	if cal.Name != "" {
 		props[internal.DisplayNameName] = internal.PropFindValue(&internal.DisplayName{
 			Name: cal.Name,
@@ -558,6 +710,21 @@ func (b *backend) propFindCalendar(ctx context.Context, propfind *internal.PropF
 			Description: cal.Description,
 		})
 	}
+	dataTypes := []calendarDataType{
+		{ContentType: ical.MIMEType, Version: "2.0"},
+	}
+	if len(cal.SupportedCalendarData) > 0 {
+		dataTypes = nil
+		for _, t := range cal.SupportedCalendarData {
+			dataTypes = append(dataTypes, calendarDataType{
+				ContentType: t.ContentType,
+				Version:     t.Version,
+			})
+		}
+	}
+	props[supportedCalendarDataName] = internal.PropFindValue(&supportedCalendarData{
+		Types: dataTypes,
+	})
 	if cal.MaxResourceSize > 0 {
 		props[maxResourceSizeName] = internal.PropFindValue(&maxResourceSize{
 			Size: cal.MaxResourceSize,
@@ -728,6 +895,57 @@ func (b *backend) Mkcol(r *http.Request) error {
 		}
 		cal.Name = m.DisplayName
 		// TODO ...
+	}
+
+	return b.Backend.CreateCalendar(r.Context(), &cal)
+}
+
+func (b *backend) Mkcalendar(r *http.Request) error {
+	if b.resourceTypeAtPath(r.URL.Path) != resourceTypeCalendar {
+		return internal.HTTPErrorf(http.StatusForbidden, "caldav: calendar creation not allowed at given location")
+	}
+
+	cal := Calendar{
+		Path: r.URL.Path,
+	}
+
+	if !internal.IsRequestBodyEmpty(r) {
+		var m mkcalendarReq
+		if err := internal.DecodeXMLRequest(r, &m); err != nil {
+			return internal.HTTPErrorf(http.StatusBadRequest, "carddav: error parsing mkcol request: %s", err.Error())
+		}
+
+		if !m.ResourceType.Is(internal.CollectionName) || !m.ResourceType.Is(calendarName) {
+			return internal.HTTPErrorf(http.StatusBadRequest, "carddav: unexpected resource type")
+		}
+		cal.Name = m.DisplayName
+		cal.Description = m.Description
+		if m.MaxSize != nil {
+			cal.MaxResourceSize = m.MaxSize.Size
+		}
+		if m.Components != nil {
+			var comps []string
+			for _, c := range m.Components.Comp {
+				if c.Name != "" {
+					comps = append(comps, c.Name)
+				}
+			}
+			if len(comps) > 0 {
+				cal.SupportedComponentSet = comps
+			}
+		}
+		if m.Data != nil {
+			var types []CalendarDataType
+			for _, t := range m.Data.Types {
+				types = append(types, CalendarDataType{
+					ContentType: t.ContentType,
+					Version:     t.Version,
+				})
+			}
+			if len(types) > 0 {
+				cal.SupportedCalendarData = types
+			}
+		}
 	}
 
 	return b.Backend.CreateCalendar(r.Context(), &cal)
