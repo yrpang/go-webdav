@@ -1123,11 +1123,13 @@ func (b *backend) Mkcalendar(r *http.Request) error {
 	if !internal.IsRequestBodyEmpty(r) {
 		var m mkcalendarReq
 		if err := internal.DecodeXMLRequest(r, &m); err != nil {
-			return internal.HTTPErrorf(http.StatusBadRequest, "carddav: error parsing mkcol request: %s", err.Error())
+			return internal.HTTPErrorf(http.StatusBadRequest, "caldav: error parsing mkcalendar request: %s", err.Error())
 		}
 
-		if !m.ResourceType.Is(internal.CollectionName) || !m.ResourceType.Is(calendarName) {
-			return internal.HTTPErrorf(http.StatusBadRequest, "carddav: unexpected resource type")
+		if len(m.ResourceType.Raw) > 0 {
+			if !m.ResourceType.Is(internal.CollectionName) || !m.ResourceType.Is(calendarName) {
+				return internal.HTTPErrorf(http.StatusBadRequest, "carddav: unexpected resource type")
+			}
 		}
 		cal.Name = m.DisplayName
 		cal.Description = m.Description
