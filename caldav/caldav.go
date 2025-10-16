@@ -162,8 +162,9 @@ type CalendarSyncResponse struct {
 }
 
 var (
-	validSyncTokenName = xml.Name{Space: internal.Namespace, Local: "valid-sync-token"}
-	syncLevelName      = xml.Name{Space: internal.Namespace, Local: "sync-level"}
+	validSyncTokenName              = xml.Name{Space: internal.Namespace, Local: "valid-sync-token"}
+	syncLevelName                   = xml.Name{Space: internal.Namespace, Local: "sync-level"}
+	numberOfMatchesWithinLimitsName = xml.Name{Space: internal.Namespace, Local: "number-of-matches-within-limits"}
 )
 
 type syncLevelError struct {
@@ -200,6 +201,18 @@ func NewSyncLevelError(levels ...string) error {
 		Code: http.StatusForbidden,
 		Err: &internal.Error{
 			Raw: []internal.RawXMLValue{*raw},
+		},
+	}
+}
+
+// NewNumberOfMatchesWithinLimitsError returns the DAV:number-of-matches-within-limits error.
+func NewNumberOfMatchesWithinLimitsError() error {
+	return &internal.HTTPError{
+		Code: http.StatusInsufficientStorage,
+		Err: &internal.Error{
+			Raw: []internal.RawXMLValue{
+				*internal.NewRawXMLElement(numberOfMatchesWithinLimitsName, nil, nil),
+			},
 		},
 	}
 }
