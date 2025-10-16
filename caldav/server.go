@@ -60,6 +60,7 @@ type Backend interface {
 	QueryCalendarObjects(ctx context.Context, path string, query *CalendarQuery) ([]CalendarObject, error)
 	SyncCalendarObjects(ctx context.Context, path string, query *CalendarSyncQuery) (*CalendarSyncResponse, error)
 	PutCalendarObject(ctx context.Context, path string, calendar *ical.Calendar, opts *PutCalendarObjectOptions) (*CalendarObject, error)
+	DeleteCalendar(ctx context.Context, path string) error
 	DeleteCalendarObject(ctx context.Context, path string) error
 
 	webdav.UserPrincipalBackend
@@ -1083,7 +1084,14 @@ func (b *backend) Put(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (b *backend) Delete(r *http.Request) error {
-	return b.Backend.DeleteCalendarObject(r.Context(), r.URL.Path)
+	switch b.resourceTypeAtPath(r.URL.Path) {
+	case resourceTypeCalendar:
+		return b.Backend.DeleteCalendar(r.Context(), r.URL.Path)
+	case resourceTypeCalendarObject:
+		return b.Backend.DeleteCalendarObject(r.Context(), r.URL.Path)
+	default:
+		return internal.HTTPErrorf(http.StatusForbidden, "caldav: delete not allowed at given location")
+	}
 }
 
 func (b *backend) Mkcol(r *http.Request) error {

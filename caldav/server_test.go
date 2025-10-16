@@ -218,12 +218,32 @@ func (t testBackend) GetCollectionETag(ctx context.Context, path string) (string
 	return "test-etag", nil
 }
 
+func (t testBackend) GetCollectionCTag(ctx context.Context, path string) (string, error) {
+	return "test-ctag", nil
+}
+
+func (t testBackend) GetCollectionSyncToken(ctx context.Context, path string) (string, error) {
+	return "test-sync-token", nil
+}
+
+func (t testBackend) UpdateCalendarColor(ctx context.Context, path string, color *CalendarColor) error {
+	return nil
+}
+
+func (t testBackend) UpdateCalendarOrder(ctx context.Context, path string, order *int) error {
+	return nil
+}
+
 func (t testBackend) CalendarHomeSetPath(ctx context.Context) (string, error) {
 	return "/user/calendars/", nil
 }
 
 func (t testBackend) CurrentUserPrincipal(ctx context.Context) (string, error) {
 	return "/user/", nil
+}
+
+func (t testBackend) DeleteCalendar(ctx context.Context, path string) error {
+	return nil
 }
 
 func (t testBackend) DeleteCalendarObject(ctx context.Context, path string) error {
