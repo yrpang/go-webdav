@@ -54,6 +54,7 @@ type Backend interface {
 	GetCollectionSyncToken(ctx context.Context, path string) (string, error)
 	UpdateCalendarColor(ctx context.Context, path string, color *CalendarColor) error
 	UpdateCalendarOrder(ctx context.Context, path string, order *int) error
+	UpdateCalendarDisplayName(ctx context.Context, path string, name *string) error
 
 	GetCalendarObject(ctx context.Context, path string, req *CalendarCompRequest) (*CalendarObject, error)
 	ListCalendarObjects(ctx context.Context, path string, req *CalendarCompRequest) ([]CalendarObject, error)
@@ -883,6 +884,17 @@ func (b *backend) handleCalendarPropPatch(r *http.Request, update *internal.Prop
 				continue
 			}
 			switch name {
+			case internal.DisplayNameName:
+				if err := b.Backend.UpdateCalendarDisplayName(ctx, r.URL.Path, nil); err != nil {
+					code := internal.HTTPErrorFromError(err).Code
+					if err := encodeResult(code, nil, name); err != nil {
+						return err
+					}
+					continue
+				}
+				if err := b.encodeDisplayName(ctx, r.URL.Path, resp, http.StatusOK, name); err != nil {
+					return err
+				}
 			case calendarColorName:
 				if err := b.Backend.UpdateCalendarColor(ctx, r.URL.Path, nil); err != nil {
 					code := internal.HTTPErrorFromError(err).Code
@@ -920,6 +932,30 @@ func (b *backend) handleCalendarPropPatch(r *http.Request, update *internal.Prop
 				continue
 			}
 			switch name {
+			case internal.DisplayNameName:
+				var disp internal.DisplayName
+				if err := raw.Decode(&disp); err != nil {
+					if err := encodeResult(http.StatusBadRequest, nil, name); err != nil {
+						return err
+					}
+					continue
+				}
+
+				value := strings.TrimSpace(disp.Name)
+				var namePtr *string
+				if value != "" {
+					namePtr = &value
+				}
+				if err := b.Backend.UpdateCalendarDisplayName(ctx, r.URL.Path, namePtr); err != nil {
+					code := internal.HTTPErrorFromError(err).Code
+					if err := encodeResult(code, nil, name); err != nil {
+						return err
+					}
+					continue
+				}
+				if err := b.encodeDisplayName(ctx, r.URL.Path, resp, http.StatusOK, name); err != nil {
+					return err
+				}
 			case calendarColorName:
 				var col calendarColor
 				if err := raw.Decode(&col); err != nil {
@@ -1013,6 +1049,34 @@ func (b *backend) handleCalendarPropPatch(r *http.Request, update *internal.Prop
 	}
 
 	return nil
+}
+
+func (b *backend) encodeDisplayName(ctx context.Context, calPath string, resp *internal.Response, status int, name xml.Name) error {
+	cal, err := b.Backend.GetCalendar(ctx, calPath)
+	display := ""
+	if err == nil && cal != nil {
+		display = cal.Name
+	}
+	if display == "" {
+		display = displayNameFromPath(calPath)
+	}
+	if strings.TrimSpace(display) == "" {
+		return resp.EncodeProp(status, internal.NewRawXMLElement(name, nil, nil))
+	}
+	return resp.EncodeProp(status, &internal.DisplayName{Name: display})
+}
+
+func displayNameFromPath(calPath string) string {
+	trimmed := strings.TrimSuffix(calPath, "/")
+	trimmed = path.Clean(trimmed)
+	if trimmed == "." || trimmed == "/" {
+		return ""
+	}
+	base := path.Base(trimmed)
+	if base == "." || base == "/" {
+		return ""
+	}
+	return base
 }
 
 func (b *backend) encodeMethodNotAllowed(update *internal.PropertyUpdate, resp *internal.Response) error {

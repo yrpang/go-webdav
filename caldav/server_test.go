@@ -234,6 +234,10 @@ func (t testBackend) UpdateCalendarOrder(ctx context.Context, path string, order
 	return nil
 }
 
+func (t testBackend) UpdateCalendarDisplayName(ctx context.Context, path string, name *string) error {
+	return nil
+}
+
 func (t testBackend) CalendarHomeSetPath(ctx context.Context) (string, error) {
 	return "/user/calendars/", nil
 }
