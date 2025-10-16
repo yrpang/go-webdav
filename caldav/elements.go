@@ -8,7 +8,10 @@ import (
 	"github.com/emersion/go-webdav/internal"
 )
 
-const namespace = "urn:ietf:params:xml:ns:caldav"
+const (
+	namespace               = "urn:ietf:params:xml:ns:caldav"
+	calendarServerNamespace = "http://calendarserver.org/ns/"
+)
 
 var (
 	calendarHomeSetName        = xml.Name{namespace, "calendar-home-set"}
@@ -18,6 +21,10 @@ var (
 	supportedCalendarDataName         = xml.Name{namespace, "supported-calendar-data"}
 	supportedCalendarComponentSetName = xml.Name{namespace, "supported-calendar-component-set"}
 	maxResourceSizeName               = xml.Name{namespace, "max-resource-size"}
+	calendarOrderName                 = xml.Name{"http://apple.com/ns/ical/", "calendar-order"}
+	calendarColorName                 = xml.Name{"http://apple.com/ns/ical/", "calendar-color"}
+	getCTagName                       = xml.Name{calendarServerNamespace, "getctag"}
+	syncTokenName                     = xml.Name{"DAV:", "sync-token"}
 
 	calendarQueryName    = xml.Name{namespace, "calendar-query"}
 	calendarMultigetName = xml.Name{namespace, "calendar-multiget"}
@@ -47,6 +54,27 @@ type calendarUserAddressSet struct {
 type calendarDescription struct {
 	XMLName     xml.Name `xml:"urn:ietf:params:xml:ns:caldav calendar-description"`
 	Description string   `xml:",chardata"`
+}
+
+type calendarColor struct {
+	XMLName       xml.Name `xml:"http://apple.com/ns/ical/ calendar-color"`
+	SymbolicColor string   `xml:"symbolic-color,attr,omitempty"`
+	Value         string   `xml:",chardata"`
+}
+
+type calendarCTag struct {
+	XMLName xml.Name `xml:"http://calendarserver.org/ns/ getctag"`
+	Value   string   `xml:",chardata"`
+}
+
+type calendarOrder struct {
+	XMLName xml.Name `xml:"http://apple.com/ns/ical/ calendar-order"`
+	Value   string   `xml:",chardata"`
+}
+
+type davSyncToken struct {
+	XMLName xml.Name `xml:"DAV: sync-token"`
+	Token   string   `xml:",chardata"`
 }
 
 // https://tools.ietf.org/html/rfc4791#section-5.2.4

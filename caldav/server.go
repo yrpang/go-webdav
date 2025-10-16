@@ -50,6 +50,10 @@ type Backend interface {
 	ListCalendars(ctx context.Context) ([]Calendar, error)
 	GetCalendar(ctx context.Context, path string) (*Calendar, error)
 	GetCollectionETag(ctx context.Context, path string) (string, error)
+	GetCollectionCTag(ctx context.Context, path string) (string, error)
+	GetCollectionSyncToken(ctx context.Context, path string) (string, error)
+	UpdateCalendarColor(ctx context.Context, path string, color *CalendarColor) error
+	UpdateCalendarOrder(ctx context.Context, path string, order *int) error
 
 	GetCalendarObject(ctx context.Context, path string, req *CalendarCompRequest) (*CalendarObject, error)
 	ListCalendarObjects(ctx context.Context, path string, req *CalendarCompRequest) ([]CalendarObject, error)
@@ -674,6 +678,14 @@ func (b *backend) propFindCalendar(ctx context.Context, propfind *internal.PropF
 	if err != nil {
 		return nil, err
 	}
+	ctag, err := b.Backend.GetCollectionCTag(ctx, cal.Path)
+	if err != nil {
+		return nil, err
+	}
+	syncToken, err := b.Backend.GetCollectionSyncToken(ctx, cal.Path)
+	if err != nil {
+		return nil, err
+	}
 
 	props := map[xml.Name]internal.PropFindFunc{
 		internal.CurrentUserPrincipalName: func(*internal.RawXMLValue) (interface{}, error) {
@@ -686,6 +698,8 @@ func (b *backend) propFindCalendar(ctx context.Context, propfind *internal.PropF
 		internal.ResourceTypeName:   internal.PropFindValue(internal.NewResourceType(internal.CollectionName, calendarName)),
 		internal.GetContentTypeName: internal.PropFindValue(&internal.GetContentType{Type: "httpd/unix-directory"}),
 		internal.GetETagName:        internal.PropFindValue(&internal.GetETag{ETag: internal.ETag(etag)}),
+		getCTagName:                 internal.PropFindValue(&calendarCTag{Value: ctag}),
+		syncTokenName:               internal.PropFindValue(&davSyncToken{Token: syncToken}),
 		supportedCalendarComponentSetName: func(*internal.RawXMLValue) (interface{}, error) {
 			components := []comp{}
 			if cal.SupportedComponentSet != nil {
@@ -708,6 +722,17 @@ func (b *backend) propFindCalendar(ctx context.Context, propfind *internal.PropF
 	if cal.Description != "" {
 		props[calendarDescriptionName] = internal.PropFindValue(&calendarDescription{
 			Description: cal.Description,
+		})
+	}
+	if cal.Color != "" || cal.ColorSymbolic != "" {
+		props[calendarColorName] = internal.PropFindValue(&calendarColor{
+			SymbolicColor: cal.ColorSymbolic,
+			Value:         cal.Color,
+		})
+	}
+	if cal.Order != nil {
+		props[calendarOrderName] = internal.PropFindValue(&calendarOrder{
+			Value: strconv.Itoa(*cal.Order),
 		})
 	}
 	dataTypes := []calendarDataType{
@@ -822,7 +847,193 @@ func (b *backend) propFindAllCalendarObjects(ctx context.Context, propfind *inte
 }
 
 func (b *backend) PropPatch(r *http.Request, update *internal.PropertyUpdate) (*internal.Response, error) {
-	return nil, internal.HTTPErrorf(http.StatusNotImplemented, "caldav: PropPatch not implemented")
+	resp := internal.NewOKResponse(r.URL.Path)
+
+	switch b.resourceTypeAtPath(r.URL.Path) {
+	case resourceTypeCalendar:
+		if err := b.handleCalendarPropPatch(r, update, resp); err != nil {
+			return nil, err
+		}
+	case resourceTypeRoot, resourceTypeUserPrincipal, resourceTypeCalendarHomeSet, resourceTypeCalendarObject:
+		if err := b.encodeMethodNotAllowed(update, resp); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, internal.HTTPErrorf(http.StatusForbidden, "caldav: property update not allowed for resource")
+	}
+
+	return resp, nil
+}
+
+func (b *backend) handleCalendarPropPatch(r *http.Request, update *internal.PropertyUpdate, resp *internal.Response) error {
+	ctx := r.Context()
+
+	encodeResult := func(code int, value interface{}, name xml.Name) error {
+		if value == nil {
+			value = internal.NewRawXMLElement(name, nil, nil)
+		}
+		return resp.EncodeProp(code, value)
+	}
+
+	for _, rem := range update.Remove {
+		for _, raw := range rem.Prop.Raw {
+			name, ok := raw.XMLName()
+			if !ok {
+				continue
+			}
+			switch name {
+			case calendarColorName:
+				if err := b.Backend.UpdateCalendarColor(ctx, r.URL.Path, nil); err != nil {
+					code := internal.HTTPErrorFromError(err).Code
+					if err := encodeResult(code, nil, name); err != nil {
+						return err
+					}
+					continue
+				}
+				if err := encodeResult(http.StatusOK, nil, name); err != nil {
+					return err
+				}
+			case calendarOrderName:
+				if err := b.Backend.UpdateCalendarOrder(ctx, r.URL.Path, nil); err != nil {
+					code := internal.HTTPErrorFromError(err).Code
+					if err := encodeResult(code, nil, name); err != nil {
+						return err
+					}
+					continue
+				}
+				if err := encodeResult(http.StatusOK, nil, name); err != nil {
+					return err
+				}
+			default:
+				if err := encodeResult(http.StatusForbidden, nil, name); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	for _, set := range update.Set {
+		for _, raw := range set.Prop.Raw {
+			name, ok := raw.XMLName()
+			if !ok {
+				continue
+			}
+			switch name {
+			case calendarColorName:
+				var col calendarColor
+				if err := raw.Decode(&col); err != nil {
+					if err := encodeResult(http.StatusBadRequest, nil, name); err != nil {
+						return err
+					}
+					continue
+				}
+
+				colorValue := strings.TrimSpace(col.Value)
+				symbolic := strings.TrimSpace(col.SymbolicColor)
+
+				var updateColor *CalendarColor
+				if colorValue != "" {
+					updateColor = &CalendarColor{
+						Value:    colorValue,
+						Symbolic: symbolic,
+					}
+				}
+
+				if err := b.Backend.UpdateCalendarColor(ctx, r.URL.Path, updateColor); err != nil {
+					code := internal.HTTPErrorFromError(err).Code
+					if err := encodeResult(code, nil, name); err != nil {
+						return err
+					}
+					continue
+				}
+
+				if updateColor == nil {
+					if err := encodeResult(http.StatusOK, nil, name); err != nil {
+						return err
+					}
+					continue
+				}
+
+				col.Value = updateColor.Value
+				col.SymbolicColor = updateColor.Symbolic
+				if err := encodeResult(http.StatusOK, &col, name); err != nil {
+					return err
+				}
+			case calendarOrderName:
+				var ord calendarOrder
+				if err := raw.Decode(&ord); err != nil {
+					if err := encodeResult(http.StatusBadRequest, nil, name); err != nil {
+						return err
+					}
+					continue
+				}
+
+				orderStr := strings.TrimSpace(ord.Value)
+				if orderStr == "" {
+					if err := b.Backend.UpdateCalendarOrder(ctx, r.URL.Path, nil); err != nil {
+						code := internal.HTTPErrorFromError(err).Code
+						if err := encodeResult(code, nil, name); err != nil {
+							return err
+						}
+						continue
+					}
+					if err := encodeResult(http.StatusOK, nil, name); err != nil {
+						return err
+					}
+					continue
+				}
+
+				orderValue, convErr := strconv.Atoi(orderStr)
+				if convErr != nil {
+					if err := encodeResult(http.StatusBadRequest, nil, name); err != nil {
+						return err
+					}
+					continue
+				}
+
+				if err := b.Backend.UpdateCalendarOrder(ctx, r.URL.Path, &orderValue); err != nil {
+					code := internal.HTTPErrorFromError(err).Code
+					if err := encodeResult(code, nil, name); err != nil {
+						return err
+					}
+					continue
+				}
+
+				ord.Value = strconv.Itoa(orderValue)
+				if err := encodeResult(http.StatusOK, &ord, name); err != nil {
+					return err
+				}
+			default:
+				if err := encodeResult(http.StatusForbidden, nil, name); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func (b *backend) encodeMethodNotAllowed(update *internal.PropertyUpdate, resp *internal.Response) error {
+	for _, set := range update.Set {
+		for _, raw := range set.Prop.Raw {
+			if name, ok := raw.XMLName(); ok {
+				if err := resp.EncodeProp(http.StatusMethodNotAllowed, internal.NewRawXMLElement(name, nil, nil)); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	for _, rem := range update.Remove {
+		for _, raw := range rem.Prop.Raw {
+			if name, ok := raw.XMLName(); ok {
+				if err := resp.EncodeProp(http.StatusMethodNotAllowed, internal.NewRawXMLElement(name, nil, nil)); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func (b *backend) Put(w http.ResponseWriter, r *http.Request) error {
