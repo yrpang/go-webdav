@@ -284,7 +284,7 @@ type mkcolReq struct {
 }
 
 type mkcalendarReq struct {
-	XMLName      xml.Name                       `xml:"DAV: mkcalendar"`
+	XMLName      xml.Name                       `xml:"urn:ietf:params:xml:ns:caldav mkcalendar"`
 	ResourceType internal.ResourceType          `xml:"set>prop>resourcetype"`
 	DisplayName  string                         `xml:"set>prop>displayname"`
 	Description  string                         `xml:"set>prop>calendar-description"`
